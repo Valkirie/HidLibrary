@@ -603,7 +603,7 @@ namespace HidLibrary
             }
         }
 
-        protected HidDeviceData ReadData(int timeout)
+        public HidDeviceData ReadData(int timeout)
         {
             var buffer = new byte[] { };
             var status = HidDeviceData.ReadStatus.NoDataRead;
