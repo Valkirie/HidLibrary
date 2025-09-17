@@ -1,6 +1,6 @@
-﻿using System;
-using System.Threading;
-using System.Threading.Tasks;
+﻿// src/HidLibrary/HidDeviceEventMonitor.cs
+
+using System;
 
 namespace HidLibrary
 {
@@ -13,55 +13,69 @@ namespace HidLibrary
         public delegate void RemovedEventHandler();
 
         private readonly HidDevice _device;
-        private bool _wasConnected;
-        private CancellationTokenSource _cts;
+        private bool _connectedCached;
+        private string _devicePathNorm; // uppercase for fast compare
+        private bool _running;
 
-        // allow callers/tests to tune this globally
-        public static int PollIntervalMs { get; set; } = 2000; // was 500
-
-        public HidDeviceEventMonitor(HidDevice device)
-        {
-            _device = device ?? throw new ArgumentNullException(nameof(device));
-        }
+        public HidDeviceEventMonitor(HidDevice device) => _device = device ?? throw new ArgumentNullException(nameof(device));
 
         public void Init()
         {
-            if (_cts != null) return;               // already running
-            _cts = new CancellationTokenSource();
+            if (_running) return;
+            _running = true;
 
-            // move off the ThreadPool to avoid worker churn
-            Task.Factory.StartNew(MonitorLoop, _cts.Token,
-                TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            _devicePathNorm = Normalize(_device.DevicePath);
+            _connectedCached = HidDevices.IsConnected(_device.DevicePath);
+
+            // Start global watcher once; subscribe per device
+            HidDeviceWatcherWin32.Instance.Start();
+            HidDeviceWatcherWin32.Instance.DeviceArrived += OnArrived;
+            HidDeviceWatcherWin32.Instance.DeviceRemoved += OnRemoved;
+
+            // If already connected at init, ensure cached state reflects it
+            // (no event fired here to keep behavior identical to previous code)
         }
 
         public void Stop()
         {
-            try { _cts?.Cancel(); }
-            catch { /* ignore */ }
-            finally { _cts = null; }
+            if (!_running) return;
+            _running = false;
+
+            HidDeviceWatcherWin32.Instance.DeviceArrived -= OnArrived;
+            HidDeviceWatcherWin32.Instance.DeviceRemoved -= OnRemoved;
         }
 
-        private void MonitorLoop()
+        private void OnArrived(string path)
         {
-            var token = _cts.Token;
+            if (!_running) return;
+            if (!IsThisDevice(path)) return;
 
-            // capture initial state cheaply
-            _wasConnected = HidDevices.IsConnected(_device.DevicePath);
-
-            while (!token.IsCancellationRequested && _device.MonitorDeviceEvents)
+            if (!_connectedCached)
             {
-                var isConnected = HidDevices.IsConnected(_device.DevicePath);
-
-                if (isConnected != _wasConnected)
-                {
-                    if (isConnected) Inserted?.Invoke();
-                    else Removed?.Invoke();
-                    _wasConnected = isConnected;
-                }
-
-                // cancellable sleep
-                token.WaitHandle.WaitOne(PollIntervalMs);
+                _connectedCached = true;
+                Inserted?.Invoke();
             }
         }
+
+        private void OnRemoved(string path)
+        {
+            if (!_running) return;
+            if (!IsThisDevice(path)) return;
+
+            if (_connectedCached)
+            {
+                _connectedCached = false;
+                Removed?.Invoke();
+            }
+        }
+
+        private bool IsThisDevice(string path)
+        {
+            // Some drivers vary case / slash; compare uppercase
+            return Normalize(path) == _devicePathNorm;
+        }
+
+        private static string Normalize(string s) =>
+            string.IsNullOrEmpty(s) ? string.Empty : s.Replace('\\', '#').ToUpperInvariant(); // minor normalization
     }
 }
