@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.InteropServices;
+using static HidLibrary.NativeMethods;
 
 namespace HidLibrary
 {
@@ -10,9 +11,42 @@ namespace HidLibrary
     {
         private static Guid _hidClassGuid = Guid.Empty;
 
+        internal const int ERROR_ACCESS_DENIED = 5;
+        internal const int ERROR_SHARING_VIOLATION = 32;
+
+        /// <summary>
+        /// Faster presence check.
+        /// </summary>
         public static bool IsConnected(string devicePath)
         {
-            return EnumerateDevices().Any(x => x.Path == devicePath);
+            if (string.IsNullOrEmpty(devicePath)) return false;
+
+            var sa = new SECURITY_ATTRIBUTES
+            {
+                nLength = Marshal.SizeOf<SECURITY_ATTRIBUTES>(),
+                lpSecurityDescriptor = IntPtr.Zero,
+                bInheritHandle = false
+            };
+
+            IntPtr h = NativeMethods.CreateFile(
+                devicePath,
+                NativeMethods.ACCESS_NONE,                                   // minimal access
+                NativeMethods.FILE_SHARE_READ | NativeMethods.FILE_SHARE_WRITE,
+                ref sa,                                                      // <-- ref struct
+                NativeMethods.OPEN_EXISTING,
+                0,
+                IntPtr.Zero);
+
+            if (h != NativeMethods.INVALID_HANDLE_VALUE)
+            {
+                NativeMethods.CloseHandle(h);
+                return true; // opened -> present
+            }
+
+            // Some HID interfaces refuse open but are present.
+            int err = Marshal.GetLastWin32Error();
+            return err == ERROR_ACCESS_DENIED ||
+                   err == ERROR_SHARING_VIOLATION;
         }
 
         public static HidDevice GetDevice(string devicePath)

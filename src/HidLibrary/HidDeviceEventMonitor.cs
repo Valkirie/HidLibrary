@@ -14,41 +14,54 @@ namespace HidLibrary
 
         private readonly HidDevice _device;
         private bool _wasConnected;
+        private CancellationTokenSource _cts;
+
+        // allow callers/tests to tune this globally
+        public static int PollIntervalMs { get; set; } = 2000; // was 500
 
         public HidDeviceEventMonitor(HidDevice device)
         {
-            _device = device;
+            _device = device ?? throw new ArgumentNullException(nameof(device));
         }
 
         public void Init()
         {
-#if NET20 || NET35 || NET5_0_OR_GREATER
-            Task task = Task.Factory.StartNew(() => DeviceEventMonitor());
-#else
-             var eventMonitor = new Action(DeviceEventMonitor);
-             eventMonitor.BeginInvoke(DisposeDeviceEventMonitor, eventMonitor);
-#endif
+            if (_cts != null) return;               // already running
+            _cts = new CancellationTokenSource();
+
+            // move off the ThreadPool to avoid worker churn
+            Task.Factory.StartNew(MonitorLoop, _cts.Token,
+                TaskCreationOptions.LongRunning, TaskScheduler.Default);
         }
 
-        private void DeviceEventMonitor()
+        public void Stop()
         {
-            var isConnected = _device.IsConnected;
+            try { _cts?.Cancel(); }
+            catch { /* ignore */ }
+            finally { _cts = null; }
+        }
 
-            if (isConnected != _wasConnected)
+        private void MonitorLoop()
+        {
+            var token = _cts.Token;
+
+            // capture initial state cheaply
+            _wasConnected = HidDevices.IsConnected(_device.DevicePath);
+
+            while (!token.IsCancellationRequested && _device.MonitorDeviceEvents)
             {
-                if (isConnected && Inserted != null) Inserted();
-                else if (!isConnected && Removed != null) Removed();
-                _wasConnected = isConnected;
+                var isConnected = HidDevices.IsConnected(_device.DevicePath);
+
+                if (isConnected != _wasConnected)
+                {
+                    if (isConnected) Inserted?.Invoke();
+                    else Removed?.Invoke();
+                    _wasConnected = isConnected;
+                }
+
+                // cancellable sleep
+                token.WaitHandle.WaitOne(PollIntervalMs);
             }
-
-            Thread.Sleep(500);
-
-            if (_device.MonitorDeviceEvents) Init();
-        }
-
-        private static void DisposeDeviceEventMonitor(IAsyncResult ar)
-        {
-            ((Action)ar.AsyncState).EndInvoke(ar);
         }
     }
 }

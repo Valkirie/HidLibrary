@@ -730,6 +730,7 @@ namespace HidLibrary
         public void Dispose()
         {
             if (MonitorDeviceEvents) MonitorDeviceEvents = false;
+            _deviceEventMonitor?.Stop();
             if (IsOpen) CloseDevice();
         }
     }
